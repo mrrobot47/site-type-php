@@ -270,12 +270,10 @@ class PHP extends EE_Site_Command {
 		$site_conf_dir           = $this->site_data['site_fs_path'] . '/config';
 		$site_docker_yml         = $this->site_data['site_fs_path'] . '/docker-compose.yml';
 		$site_conf_env           = $this->site_data['site_fs_path'] . '/.env';
-		$site_nginx_default_conf = $site_conf_dir . '/nginx/main.conf';
+		$site_nginx_default_conf = $site_conf_dir . '/nginx/default.conf';
 		$site_php_ini            = $site_conf_dir . '/php-fpm/php.ini';
 		$site_src_dir            = $this->site_data['site_fs_path'] . '/app/src';
 		$server_name             = $this->site_data['site_url'];
-		$custom_conf_dest        = $site_conf_dir . '/nginx/custom/user.conf';
-		$custom_conf_source      = SITE_PHP_TEMPLATE_ROOT . '/config/nginx/user.conf.mustache';
 		$process_user            = posix_getpwuid( posix_geteuid() );
 
 		\EE::log( 'Creating PHP site ' . $this->site_data['site_url'] );
@@ -316,8 +314,10 @@ class PHP extends EE_Site_Command {
 		try {
 			$this->fs->dumpFile( $site_docker_yml, $docker_compose_content );
 			$this->fs->dumpFile( $site_conf_env, $env_content );
+			$this->fs->mkdir( $site_conf_dir );
+			$this->fs->mkdir( $site_conf_dir . '/nginx' );
 			$this->fs->dumpFile( $site_nginx_default_conf, $default_conf_content );
-			$this->fs->copy( $custom_conf_source, $custom_conf_dest );
+			$this->fs->mkdir( $site_conf_dir . '/php-fpm' );
 			$this->fs->dumpFile( $site_php_ini, $php_ini_content );
 
 			\EE\Site\Utils\set_postfix_files( $this->site_data['site_url'], $site_conf_dir );
@@ -327,6 +327,7 @@ class PHP extends EE_Site_Command {
 				'site_src_root' => $this->site_data['site_fs_path'] . '/app/src',
 			];
 			$index_html = \EE\Utils\mustache_render( SITE_PHP_TEMPLATE_ROOT . '/index.php.mustache', $index_data );
+			$this->fs->mkdir( $site_src_dir );
 			$this->fs->dumpFile( $site_src_dir . '/index.php', $index_html );
 
 			\EE::success( 'Configuration files copied.' );
@@ -335,9 +336,83 @@ class PHP extends EE_Site_Command {
 		}
 	}
 
+	/**
+	 * Update a site.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [<site-name>]
+	 * : Name of website.
+	 *
+	 * [--type=<site-type>]
+	 * : Update to valid and supported site-type.
+	 *
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     # Update php version
+	 *     $ ee site update example.com --php7.2
+	 */
+	public function update( $args, $assoc_args ) {
+
+		parent::update();die;
+		\EE\Utils\delem_log( 'site update start' );
+		
+		$args             = auto_site_name( $args, 'wp', __FUNCTION__ );
+		$this->site_data = get_site_info( $args, false, true, false );
+
+		$php_versions = ['5_6','7_0','7_1','7_2'];
+		$counter = 0;
+		$version_to_update = '';
+
+		foreach( $php_versions as $php_version ) {
+			if( \EE\Utils\get_flag_value( $assoc_args, 'php' . $php_version ) ) {
+				$version_to_update = $php_version;
+				$counter++;
+			}
+		}
+
+		if ( $counter === 0 ) { 
+			\EE::error( 'No params passed.' );
+		}
+
+		if ( $counter > 1 ) { 
+			\EE::error( 'Can not update to multiple php versions at the same time.' );
+		}
+
+		if ( $this->site_data->php_version === str_replace( '_', '.', $version_to_update ) ) {
+			\EE::error( sprintf('%s is already using php%s',$this->site_data->site_url,$this->site_data->php_version ) );
+		}
+
+		\EE::log( 'Starting update' );
+
+		$site_docker_yml = $this->site_data->site_fs_path . '/docker-compose.yml';
+
+		$filter                 = [];
+		$filter[]               = $this->site_data->app_sub_type;
+		$filter[]               = $this->site_data->cache_nginx_fullpage ? 'redis' : 'none';
+		$filter[]               = $this->site_data->db_host;
+		$filter[ 'php_image' ]  = 'easyengine/php' . $version_to_update;
+		$site_docker            = new Site_WP_Docker();
+
+		$docker_compose_content = $site_docker->generate_docker_compose_yml( $filter );
+
+		$this->fs->dumpFile( $site_docker_yml, $docker_compose_content );
+
+		if( \EE::docker()::docker_compose_up( $this->site_data->site_fs_path, [ 'php' ] ) ) {
+			$this->site_data->php_version = str_replace( '_', '.', $version_to_update );
+			$this->site_data->save();
+			\EE::success( "{$this->site_data->site_url} successfully updated to php{$this->site_data->php_version}" );
+		} else{
+			// Rollback :P
+		}
+
+	}
+
+
 
 	/**
-	 * Function to generate main.conf from mustache templates.
+	 * Function to generate default.conf from mustache templates.
 	 *
 	 * @param boolean $cache_type Cache enabled or not.
 	 * @param string $server_name Name of server to use in virtual_host.
@@ -350,7 +425,7 @@ class PHP extends EE_Site_Command {
 		$default_conf_data['include_php_conf']   = ! $cache_type;
 		$default_conf_data['include_redis_conf'] = $cache_type;
 
-		return \EE\Utils\mustache_render( SITE_PHP_TEMPLATE_ROOT . '/config/nginx/main.conf.mustache', $default_conf_data );
+		return \EE\Utils\mustache_render( SITE_PHP_TEMPLATE_ROOT . '/config/nginx/default.conf.mustache', $default_conf_data );
 	}
 
 	private function maybe_verify_remote_db_connection() {
@@ -587,3 +662,4 @@ class PHP extends EE_Site_Command {
 	}
 
 }
+
